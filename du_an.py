@@ -53,84 +53,83 @@ targets = [
 ]
 
 # 5. QUY TRÌNH CÀO DỮ LIỆU
+# ... (Phần khởi tạo target và driver giữ nguyên) ...
+
 try:
     for target in targets:
-        print(f"\n🚀 Đang cào danh mục: {target['cat']}")
+        print(f"🚀 Đang quét: {target['cat']}")
         driver.get(target['url'])
-        time.sleep(4)
+        time.sleep(5)
 
-        # Nhấn "Xem thêm" 40 lần để bung ~1000 sản phẩm
-        for i in range(60):
+        # 1. Nhấn "Xem thêm" để bung dữ liệu (range(20) để thử nghiệm nhanh, tăng lên nếu muốn lấy nhiều)
+        for _ in range(20):
             try:
-                # Cuộn xuống để nút hiện ra
-                driver.execute_script("window.scrollTo(0, document.body.scrollHeight - 1000);")
                 btn = driver.find_element(By.CSS_SELECTOR, "a.btn-show-more")
                 driver.execute_script("arguments[0].click();", btn)
                 time.sleep(1.5)
             except: break
 
-        # CUỘN TRANG TỪ TỪ ĐỂ NẠP DỮ LIỆU (Tránh mất Rating/Giá)
-        print("  - Đang nạp dữ liệu đánh giá...")
-        for s in range(0, 20):
-            driver.execute_script(f"window.scrollTo(0, {s * 1500});")
-            time.sleep(0.3)
+        # 2. Lấy danh sách link sản phẩm từ trang danh sách
+        # Dùng container bao ngoài cùng để lấy thông tin chuẩn
+        items = driver.find_elements(By.CLASS_NAME, "product-info-container")
+        print(f"  - Tìm thấy {len(items)} sản phẩm. Bắt đầu cào sâu...")
 
-# Lấy danh sách thẻ sản phẩm (Dựa trên ảnh image_53acac.jpg)
-        items = driver.find_elements(By.CSS_SELECTOR, "div.product-info")
-        print(f"  - Tìm thấy {len(items)} thẻ. Đang bóc tách...")
-
+        # Lưu danh sách tạm để tránh lỗi stale element khi chuyển tab
+        temp_list = []
         for p in items:
             try:
-                # 1. LẤY TÊN SẢN PHẨM (Phải lấy được cái này đầu tiên)
-                # Dùng Selector rộng hơn để đảm bảo lấy được h3
-                try:
-                    name_el = p.find_element(By.TAG_NAME, "h3")
-                    product_name = name_el.text.strip()
-                except:
-                    # Nếu không tìm thấy h3, thử lấy class cụ thể
-                    product_name = p.find_element(By.CSS_SELECTOR, ".product__name").text.strip()
-
-                # 2. LẤY LINK
+                name = p.find_element(By.TAG_NAME, "h3").text.strip()
                 link = p.find_element(By.TAG_NAME, "a").get_attribute("href")
-                
-                # 3. LẤY GIÁ TIỀN (Sửa Selector cho giá đỏ hiện thị)
+                price_text = p.find_element(By.CLASS_NAME, "product__price--show").text
+                price = int(re.sub(r"[^\d]", "", price_text))
+                temp_list.append({"name": name, "link": link, "price": price})
+            except: continue
+
+        # 3. Truy cập từng link để lấy RAM, Screen, Chip
+        for item in temp_list:
+            try:
+                # Mở link trong tab mới
+                driver.execute_script("window.open(arguments[0], '_blank');", item['link'])
+                driver.switch_to.window(driver.window_handles[1])
+                time.sleep(2.5) # Chờ load bảng thông số
+
+                ram, screen, chip = "N/A", "N/A", "N/A"
+                # Lấy dữ liệu từ bảng technical-content
                 try:
-                    # CellphoneS thường dùng class 'product__price--show' hoặc 'special-price'
-                    price_text = p.find_element(By.CSS_SELECTOR, "p.product__price--show").text
-                    price = parse_number(price_text)
-                except:
-                    price = 0
+                    rows = driver.find_elements(By.CSS_SELECTOR, "table.technical-content tr")
+                    for row in rows:
+                        row_text = row.text.lower()
+                        # Lấy giá trị ở ô td thứ 2
+                        val = row.find_elements(By.TAG_NAME, "td")[-1].text.strip()
+                        
+                        if "dung lượng ram" in row_text: ram = val
+                        elif "kích thước màn hình" in row_text: screen = val
+                        elif "chipset" in row_text: chip = val
+                except: pass
 
-                # 4. LẤY SỐ SAO (Dựa trên ảnh image_dfdc2b.jpg của bạn)
-                try:
-                    # Dùng Javascript để lấy text ẩn nếu cần
-                    rating_el = p.find_element(By.CLASS_NAME, "product__box-rating")
-                    rating_raw = driver.execute_script("return arguments[0].textContent;", rating_el)
-                    # Dùng regex để bắt số (ví dụ '4.9' hoặc '5') từ chuỗi
-                    rating_score = float(re.search(r"\d+(\.\d+)?", rating_raw).group())
-                except:
-                    rating_score = 0.0
+                # Đóng tab chi tiết và quay về trang chính
+                driver.close()
+                driver.switch_to.window(driver.window_handles[0])
 
-                # 5. NHẬN DIỆN THƯƠNG HIỆU (Chỉ chạy khi đã có product_name)
-                brand = detect_brand(product_name)
+                # Lưu vào DB
+                cursor.execute("""
+                    INSERT OR IGNORE INTO products (product_url, brand, product_name, category, price, ram, screen, chip)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (item['link'], detect_brand(item['name']), item['name'], target['cat'], item['price'], ram, screen, chip))
+                conn.commit()
+                print(f"    ✔ Đã lưu: {item['name'][:30]}...")
 
-                # KIỂM TRA NẾU CÓ TÊN MỚI LƯU (Tránh lưu dòng trắng)
-                if product_name:
-                    cursor.execute("""
-                        INSERT OR IGNORE INTO products (product_url, brand, product_name, category, price, rating_score)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    """, (link, brand, product_name, target['cat'], price, rating_score))
-                
             except Exception as e:
-                # In lỗi ra để kiểm tra nếu cần
-                # print(f"Lỗi thẻ: {e}")
+                # Đảm bảo luôn quay về tab chính nếu có lỗi
+                if len(driver.window_handles) > 1:
+                    driver.close()
+                    driver.switch_to.window(driver.window_handles[0])
                 continue
-        
-        conn.commit()
-        print(f"  ✔ Đã lưu xong sản phẩm của {target['cat']}")
 
 finally:
     driver.quit()
+    conn.close()
+    print("✅ Hoàn thành! Bạn hãy mở SQLiteStudio để xem kết quả.")
 
 # 6. THỐNG KÊ KẾT QUẢ
 print("\n" + "="*50)
