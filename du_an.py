@@ -9,7 +9,9 @@ from webdriver_manager.firefox import GeckoDriverManager
 # -------------------------------
 # 1. CẤU HÌNH SQLITE
 # -------------------------------
-DB_FILE = r"D:\Program\lo\ma_nguon_mo\sqlite\cellphones_do_an.db"
+# Lấy đường dẫn của thư mục hiện tại đang chứa file code này
+base_dir = os.path.dirname(os.path.abspath(__file__))
+DB_FILE = os.path.join(base_dir, "cellphones_do_an.db")
 conn = sqlite3.connect(DB_FILE)
 cursor = conn.cursor()
 
@@ -45,7 +47,7 @@ def detect_brand(name):
 # -------------------------------
 firefox_options = Options()
 # Gán đường dẫn file exe của bạn
-firefox_options.binary_location = r"C:\Program Files\Mozilla Firefox\firefox.exe"
+firefox_options.binary_location = r"c:\Program Files\Mozilla Firefox\firefox.exe"
 
 # Khởi tạo Driver thông qua Service
 service = Service(GeckoDriverManager().install())
@@ -55,10 +57,20 @@ driver = webdriver.Firefox(service=service, options=firefox_options)
 # 4. DANH SÁCH MỤC TIÊU CÀO
 # -------------------------------
 targets = [
+    # Nhóm Mobile/Tablet
     {"url": "https://cellphones.com.vn/mobile.html", "cat": "Smartphone", "type": "Mới"},
     {"url": "https://cellphones.com.vn/tablet.html", "cat": "Tablet", "type": "Mới"},
+    
+    # Nhóm Laptop (Số lượng cực lớn)
+    {"url": "https://cellphones.com.vn/laptop.html", "cat": "Laptop", "type": "Mới"},
+    
+    # Nhóm Đồng hồ & Tai nghe (Phụ kiện nhiều mẫu mã)
+    {"url": "https://cellphones.com.vn/dong-ho-thong-minh.html", "cat": "Smartwatch", "type": "Mới"},
+    {"url": "https://cellphones.com.vn/thiet-bi-am-thanh/tai-nghe.html", "cat": "Tai nghe", "type": "Phụ kiện"},
+
+    # Nhóm Hàng Cũ (Giá rẻ, nhiều dữ liệu)
     {"url": "https://cellphones.com.vn/hang-cu/dien-thoai.html", "cat": "Smartphone", "type": "Cũ"},
-    {"url": "https://cellphones.com.vn/hang-cu/may-tinh-bang.html", "cat": "Tablet", "type": "Cũ"}
+    {"url": "https://cellphones.com.vn/hang-cu/laptop.html", "cat": "Laptop", "type": "Cũ"}
 ]
 
 # -------------------------------
@@ -66,35 +78,56 @@ targets = [
 # -------------------------------
 try:
     total_saved = 0
+    start_time = time.time()
+    
     for target in targets:
-        print(f"\n🚀 Đang cào: {target['cat']} ({target['type']})")
+        print(f"\n🚀 Đang cào danh mục: {target['cat']} ({target['type']})...")
         driver.get(target['url'])
-        time.sleep(5) # Chờ trang load ban đầu
+        time.sleep(5) 
 
-        # Nhấn "Xem thêm" 15 lần để bung hết sản phẩm (mỗi lần ~20-30 máy)
-        for i in range(15):
+        # --- CHIẾN THUẬT CÀO SÂU: Tăng số lần click lên 60 ---
+        max_clicks = 60 
+        for i in range(max_clicks):
             try:
-                # Tìm nút Xem thêm của CellphoneS
                 btn = driver.find_element(By.CSS_SELECTOR, "a.btn-show-more")
+                # Scroll xuống để tránh bị quảng cáo che
+                driver.execute_script("arguments[0].scrollIntoView(true);", btn)
+                time.sleep(1)
                 driver.execute_script("arguments[0].click();", btn)
-                time.sleep(2)
+                time.sleep(2) # Nghỉ 2s để load
+                
+                # In ra tiến độ để đỡ sốt ruột
+                if (i+1) % 10 == 0:
+                    print(f"  -> Đã click 'Xem thêm' lần thứ {i+1}...")
             except:
-                break # Hết nút thì dừng
+                print(f"  -> Đã hết sản phẩm để xem thêm tại lần click {i}.")
+                break 
 
-        # Lấy tất cả card sản phẩm đã bung ra
+        # Lấy tất cả card sản phẩm
         items = driver.find_elements(By.CSS_SELECTOR, "div.product-info")
-        
+        print(f"  -> Tìm thấy {len(items)} sản phẩm trên trang này. Đang lưu...")
+
+        count_in_cat = 0
         for item in items:
             try:
                 name = item.find_element(By.CSS_SELECTOR, "div.product__name h3").text.strip()
                 link = item.find_element(By.TAG_NAME, "a").get_attribute("href")
-                price = parse_number(item.find_element(By.CSS_SELECTOR, "p.product__price--show").text)
                 
-                # Lấy Rating Count (Số lượt đánh giá)
+                # Xử lý giá (có thể rỗng hoặc "Liên hệ")
                 try:
-                    rating_raw = item.find_element(By.CSS_SELECTOR, "div.product__rating").text
-                    # Trích xuất số cuối cùng trong ngoặc đơn (số đánh giá)
-                    rating_count = int(re.findall(r"\d+", rating_raw)[-1])
+                    price_text = item.find_element(By.CSS_SELECTOR, "p.product__price--show").text
+                    price = parse_number(price_text)
+                except:
+                    price = 0
+                
+                # Xử lý Rating Count
+                try:
+                    rating_box = item.find_element(By.CSS_SELECTOR, "div.product__rating")
+                    if "style" in rating_box.get_attribute("outerHTML") and "display: none" in rating_box.get_attribute("style"):
+                         rating_count = 0
+                    else:
+                        rating_raw = rating_box.text
+                        rating_count = int(re.findall(r"\d+", rating_raw)[-1])
                 except:
                     rating_count = 0
 
@@ -104,16 +137,21 @@ try:
                     INSERT OR IGNORE INTO products (product_url, brand, product_name, category, product_type, price, rating_count)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (link, brand, name, target['cat'], target['type'], price, rating_count))
-                total_saved += 1
-            except:
+                
+                if cursor.rowcount > 0: # Chỉ đếm nếu là sản phẩm mới chưa có trong DB
+                    count_in_cat += 1
+                    total_saved += 1
+            except Exception as e:
                 continue
         
         conn.commit()
-        print(f"✔ Đã lưu xong danh mục {target['cat']}")
+        print(f"✔ Đã lưu mới {count_in_cat} sản phẩm từ danh mục này.")
 
 finally:
     driver.quit()
-    print(f"\n✅ HOÀN THÀNH: Tổng cộng đã lưu {total_saved} sản phẩm.")
+    print("="*50)
+    print(f"✅ HOÀN THÀNH CHIẾN DỊCH! Tổng cộng đã lưu thêm: {total_saved} sản phẩm.")
+    print(f"⏱ Thời gian chạy: {int(time.time() - start_time)} giây.")
 
 # -------------------------------
 # 6. TRUY VẤN PHÂN TÍCH ĐỒ ÁN
