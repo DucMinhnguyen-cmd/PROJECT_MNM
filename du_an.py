@@ -4,145 +4,135 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.firefox.service import Service
-from webdriver_manager.firefox import GeckoDriverManager
 
-# -------------------------------
 # 1. CẤU HÌNH SQLITE
-# -------------------------------
-DB_FILE = r"D:\Program\lo\ma_nguon_mo\sqlite\cellphones_do_an.db"
+DB_FILE = r"D:\Program\PROJECT\cellphones.db"
 conn = sqlite3.connect(DB_FILE)
 cursor = conn.cursor()
 
-# Tạo bảng với các cột phục vụ phân tích đồ án
+# Làm mới bảng để cập nhật cấu trúc chuẩn
+cursor.execute("DROP TABLE IF EXISTS products")
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS products (
+CREATE TABLE products (
     product_url TEXT PRIMARY KEY,
     brand TEXT,
     product_name TEXT,
-    category TEXT,          -- Smartphone / Tablet
-    product_type TEXT,      -- Mới / Cũ
+    category TEXT,
     price INTEGER,
-    rating_count INTEGER,   -- Số lượt đánh giá để biết độ HOT
+    rating_score REAL,
     scraped_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 """)
 conn.commit()
 
-# -------------------------------
 # 2. HÀM TIỆN ÍCH
-# -------------------------------
 def parse_number(text):
     return int(re.sub(r"[^\d]", "", text or "") or 0)
 
 def detect_brand(name):
-    # Tự động lấy hãng từ từ đầu tiên của tên sản phẩm
-    first_word = name.split()[0]
-    mapping = {"iPhone": "Apple", "iPad": "Apple"}
-    return mapping.get(first_word, first_word)
+    """Nhận diện hãng từ tên sản phẩm để tránh lấy chữ 'Điện thoại'"""
+    name_l = name.lower()
+    brands = ['iPhone', 'Samsung', 'Oppo', 'Xiaomi', 'Vivo', 'Realme', 'Nokia', 'Asus', 'Tecno', 'Huawei', 'iPad', 'Lenovo']
+    for b in brands:
+        if b.lower() in name_l:
+            return 'Apple' if b in ['iPhone', 'iPad'] else b.capitalize()
+    return "Khác"
 
-# -------------------------------
-# 3. CẤU HÌNH FIREFOX
-# -------------------------------
-firefox_options = Options()
-# Gán đường dẫn file exe của bạn
-firefox_options.binary_location = r"C:\Program Files\Mozilla Firefox\firefox.exe"
+# 3. KHỞI TẠO FIREFOX (Sử dụng đường dẫn binary của bạn)
+options = Options()
+options.binary_location = r"C:\Program Files\Mozilla Firefox\firefox.exe"
+# Khởi tạo driver trực tiếp để tránh lỗi Timeout mạng của DriverManager
+driver = webdriver.Firefox(options=options)
 
-# Khởi tạo Driver thông qua Service
-service = Service(GeckoDriverManager().install())
-driver = webdriver.Firefox(service=service, options=firefox_options)
-
-# -------------------------------
-# 4. DANH SÁCH MỤC TIÊU CÀO
-# -------------------------------
+# 4. DANH SÁCH MỤC TIÊU
 targets = [
-    {"url": "https://cellphones.com.vn/mobile.html", "cat": "Smartphone", "type": "Mới"},
-    {"url": "https://cellphones.com.vn/tablet.html", "cat": "Tablet", "type": "Mới"},
-    {"url": "https://cellphones.com.vn/hang-cu/dien-thoai.html", "cat": "Smartphone", "type": "Cũ"},
-    {"url": "https://cellphones.com.vn/hang-cu/may-tinh-bang.html", "cat": "Tablet", "type": "Cũ"}
+    {"url": "https://cellphones.com.vn/mobile.html", "cat": "Smartphone"},
+    {"url": "https://cellphones.com.vn/tablet.html", "cat": "Tablet"},
+    {"url": "https://cellphones.com.vn/hang-cu/dien-thoai.html", "cat": "Smartphone-Cu"},
+    {"url": "https://cellphones.com.vn/hang-cu/may-tinh-bang.html", "cat": "Tablet-Cu"}
 ]
 
-# -------------------------------
 # 5. QUY TRÌNH CÀO DỮ LIỆU
-# -------------------------------
 try:
-    total_saved = 0
     for target in targets:
-        print(f"\n🚀 Đang cào: {target['cat']} ({target['type']})")
+        print(f"\n🚀 Đang cào danh mục: {target['cat']}")
         driver.get(target['url'])
-        time.sleep(5) # Chờ trang load ban đầu
+        time.sleep(4)
 
-        # Nhấn "Xem thêm" 15 lần để bung hết sản phẩm (mỗi lần ~20-30 máy)
-        for i in range(15):
+        # Nhấn "Xem thêm" 40 lần để bung ~1000 sản phẩm
+        for i in range(60):
             try:
-                # Tìm nút Xem thêm của CellphoneS
+                # Cuộn xuống để nút hiện ra
+                driver.execute_script("window.scrollTo(0, document.body.scrollHeight - 1000);")
                 btn = driver.find_element(By.CSS_SELECTOR, "a.btn-show-more")
                 driver.execute_script("arguments[0].click();", btn)
-                time.sleep(2)
-            except:
-                break # Hết nút thì dừng
+                time.sleep(1.5)
+            except: break
 
-        # Lấy tất cả card sản phẩm đã bung ra
+        # CUỘN TRANG TỪ TỪ ĐỂ NẠP DỮ LIỆU (Tránh mất Rating/Giá)
+        print("  - Đang nạp dữ liệu đánh giá...")
+        for s in range(0, 20):
+            driver.execute_script(f"window.scrollTo(0, {s * 1500});")
+            time.sleep(0.3)
+
+# Lấy danh sách thẻ sản phẩm (Dựa trên ảnh image_53acac.jpg)
         items = driver.find_elements(By.CSS_SELECTOR, "div.product-info")
-        
-        for item in items:
+        print(f"  - Tìm thấy {len(items)} thẻ. Đang bóc tách...")
+
+        for p in items:
             try:
-                name = item.find_element(By.CSS_SELECTOR, "div.product__name h3").text.strip()
-                link = item.find_element(By.TAG_NAME, "a").get_attribute("href")
-                price = parse_number(item.find_element(By.CSS_SELECTOR, "p.product__price--show").text)
-                
-                # Lấy Rating Count (Số lượt đánh giá)
+                # 1. LẤY TÊN SẢN PHẨM (Phải lấy được cái này đầu tiên)
+                # Dùng Selector rộng hơn để đảm bảo lấy được h3
                 try:
-                    rating_raw = item.find_element(By.CSS_SELECTOR, "div.product__rating").text
-                    # Trích xuất số cuối cùng trong ngoặc đơn (số đánh giá)
-                    rating_count = int(re.findall(r"\d+", rating_raw)[-1])
+                    name_el = p.find_element(By.TAG_NAME, "h3")
+                    product_name = name_el.text.strip()
                 except:
-                    rating_count = 0
+                    # Nếu không tìm thấy h3, thử lấy class cụ thể
+                    product_name = p.find_element(By.CSS_SELECTOR, ".product__name").text.strip()
 
-                brand = detect_brand(name)
+                # 2. LẤY LINK
+                link = p.find_element(By.TAG_NAME, "a").get_attribute("href")
+                
+                # 3. LẤY GIÁ TIỀN (Sửa Selector cho giá đỏ hiện thị)
+                try:
+                    # CellphoneS thường dùng class 'product__price--show' hoặc 'special-price'
+                    price_text = p.find_element(By.CSS_SELECTOR, "p.product__price--show").text
+                    price = parse_number(price_text)
+                except:
+                    price = 0
 
-                cursor.execute("""
-                    INSERT OR IGNORE INTO products (product_url, brand, product_name, category, product_type, price, rating_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (link, brand, name, target['cat'], target['type'], price, rating_count))
-                total_saved += 1
-            except:
+                # 4. LẤY SỐ SAO (Dựa trên ảnh image_dfdc2b.jpg của bạn)
+                try:
+                    # Dùng Javascript để lấy text ẩn nếu cần
+                    rating_el = p.find_element(By.CLASS_NAME, "product__box-rating")
+                    rating_raw = driver.execute_script("return arguments[0].textContent;", rating_el)
+                    # Dùng regex để bắt số (ví dụ '4.9' hoặc '5') từ chuỗi
+                    rating_score = float(re.search(r"\d+(\.\d+)?", rating_raw).group())
+                except:
+                    rating_score = 0.0
+
+                # 5. NHẬN DIỆN THƯƠNG HIỆU (Chỉ chạy khi đã có product_name)
+                brand = detect_brand(product_name)
+
+                # KIỂM TRA NẾU CÓ TÊN MỚI LƯU (Tránh lưu dòng trắng)
+                if product_name:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO products (product_url, brand, product_name, category, price, rating_score)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    """, (link, brand, product_name, target['cat'], price, rating_score))
+                
+            except Exception as e:
+                # In lỗi ra để kiểm tra nếu cần
+                # print(f"Lỗi thẻ: {e}")
                 continue
         
         conn.commit()
-        print(f"✔ Đã lưu xong danh mục {target['cat']}")
+        print(f"  ✔ Đã lưu xong sản phẩm của {target['cat']}")
 
 finally:
     driver.quit()
-    print(f"\n✅ HOÀN THÀNH: Tổng cộng đã lưu {total_saved} sản phẩm.")
 
-# -------------------------------
-# 6. TRUY VẤN PHÂN TÍCH ĐỒ ÁN
-# -------------------------------
-def run_query(sql):
-    return pd.read_sql_query(sql, conn)
-
-print("\n" + "="*40)
-print("BÁO CÁO PHÂN TÍCH NHÃN HIỆU")
-print("="*40)
-
-# 1. Top hãng bán chạy (Dựa trên tổng đánh giá)
-print("\n🔥 Top 5 hãng Bán chạy nhất (Tương tác cao nhất):")
-print(run_query("""
-    SELECT brand, SUM(rating_count) as total_feedback
-    FROM products
-    GROUP BY brand
-    ORDER BY total_feedback DESC LIMIT 5;
-"""))
-
-# 2. Hãng có dấu hiệu tụt dốc (Nhiều model nhưng ít người mua/đánh giá)
-print("\n📉 Top 5 hãng có dấu hiệu Tụt dốc (Chỉ số hiệu quả thấp):")
-print(run_query("""
-    SELECT brand, COUNT(*) as total_models, 
-           ROUND(CAST(SUM(rating_count) AS FLOAT) / COUNT(*), 2) as efficiency_score
-    FROM products
-    GROUP BY brand
-    HAVING total_models > 5
-    ORDER BY efficiency_score ASC LIMIT 5;
-"""))
-
+# 6. THỐNG KÊ KẾT QUẢ
+print("\n" + "="*50)
+print(pd.read_sql_query("SELECT brand, COUNT(*) as SL, ROUND(AVG(rating_score), 2) as 'Sao_TB' FROM products GROUP BY brand HAVING SL > 5 ORDER BY SL DESC", conn))
 conn.close()
