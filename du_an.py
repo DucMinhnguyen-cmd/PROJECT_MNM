@@ -86,7 +86,7 @@ try:
         time.sleep(5) 
 
         # --- CHIẾN THUẬT CÀO SÂU: Tăng số lần click lên 60 ---
-        max_clicks = 60 
+        max_clicks = 120 
         for i in range(max_clicks):
             try:
                 btn = driver.find_element(By.CSS_SELECTOR, "a.btn-show-more")
