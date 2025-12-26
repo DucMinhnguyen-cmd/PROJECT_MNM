@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS products (
     price_sale INTEGER,
     price_original INTEGER,
     discount_rate TEXT,
-    rating_count INTEGER,       -- Số lượng đánh giá
+    five_star_count INTEGER,       -- Số lượng đánh giá
     spec_ram TEXT,
     spec_storage TEXT,
     spec_screen TEXT,
@@ -82,7 +82,7 @@ def get_specs(driver):
 # --- ĐÂY LÀ HÀM BẠN BỊ THIẾU Ở BƯỚC TRƯỚC ---
 def get_json_data(driver):
     """Lấy Giá, Ảnh, SKU và Rating từ dữ liệu ẩn (JSON-LD)"""
-    info = {"price": 0, "img": "", "sku": "", "rating": 0}
+    info = {"price": 0, "img": "", "sku": ""}
     try:
         scripts = driver.find_elements(By.XPATH, "//script[@type='application/ld+json']")
         for script in scripts:
@@ -103,13 +103,6 @@ def get_json_data(driver):
                 if "image" in data:
                     img = data["image"]
                     info["img"] = img[0] if isinstance(img, list) else img
-                
-                # 3. Lấy Rating (Đánh giá)
-                if "aggregateRating" in data:
-                    ag = data["aggregateRating"]
-                    if "reviewCount" in ag:
-                        info["rating"] = clean_number(ag["reviewCount"])
-                
                 # Ưu tiên tìm thấy giá > 0
                 if info["price"] > 0: break
             except: continue
@@ -119,22 +112,10 @@ def get_json_data(driver):
 # =========================================================
 # 3. CHẠY CRAWL
 # =========================================================
-# =========================================================
-# 3. CHẠY CRAWL
-# =========================================================
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.chrome.service import Service as ChromeService
-from webdriver_manager.chrome import ChromeDriverManager
-
-chrome_options = ChromeOptions()
-# chrome_options.add_argument("--headless") # <--- ĐÃ KHÓA DÒNG NÀY LẠI ĐỂ HIỆN TRÌNH DUYỆT
-chrome_options.add_argument("--disable-gpu")
-chrome_options.add_argument("--window-size=1200,800")
-chrome_options.add_argument("--log-level=3")
-
-print("🚀 Đang khởi động Chrome...")
-service = ChromeService(ChromeDriverManager().install())
-driver = webdriver.Chrome(service=service, options=chrome_options)
+options = Options()
+options.add_argument("--headless") # Chạy ẩn cho nhanh
+service = Service(GeckoDriverManager().install())
+driver = webdriver.Firefox(service=service, options=options)
 
 targets = [
     {"url": "https://cellphones.com.vn/mobile.html", "cat": "Smartphone", "type": "Mới"},
@@ -200,11 +181,30 @@ try:
                 rating_count = json_info["rating"]
 
                 # Fallback Rating
-                if rating_count == 0:
-                    try:
-                        rate_txt = driver.find_element(By.CSS_SELECTOR, ".boxReview-score__count strong").text
-                        rating_count = clean_number(rate_txt)
-                    except: pass
+                five_star_count = 0
+
+                try:
+                    # 1. Cuộn chuột xuống sâu để kích hoạt nạp (Lazy Load) phần Review
+                    driver.execute_script("window.scrollTo(0, document.body.scrollHeight - 2000);")
+                    time.sleep(2) # Chờ 2 giây để thanh Progress kịp hiện ra
+
+                    # 2. Tìm khối chứa các thanh sao
+                    # Selector này bao quát và chính xác hơn trên Cellphones
+                    rating_block = driver.find_element(By.CSS_SELECTOR, "div.boxReview-score__list")
+
+                    # 3. Tìm tất cả các thẻ progress (thường sắp xếp từ 5 sao xuống 1 sao)
+                    progress_bars = rating_block.find_elements(By.TAG_NAME, "progress")
+
+                    if len(progress_bars) > 0:
+                        # progress đầu tiên [0] tương ứng với 5 sao
+                        # Lấy giá trị từ thuộc tính 'value' (đây chính là con số lượng đánh giá)
+                        val = progress_bars[0].get_attribute("value")
+                        five_star_count = int(val) if val else 0
+
+                except Exception as e:
+                    # In ra lỗi nếu cần debug, nếu không thì cứ để mặc định là 0
+                    # print(f"Lỗi lấy 5 sao: {e}")
+                    five_star_count = 0
 
                 # Fallback Giá
                 if price_sale == 0:
@@ -236,18 +236,18 @@ try:
                 cursor.execute("""
                     INSERT INTO products (
                         product_url, sku, brand, product_name, category, type, 
-                        price_sale, price_original, discount_rate, rating_count,
+                        price_sale, price_original, discount_rate, five_star_count,
                         spec_ram, spec_storage, spec_screen, spec_chip, img_url
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     link, sku, detect_brand(name), name, target['cat'], target['type'],
-                    price_sale, price_orig, discount, rating_count,
+                    price_sale, price_orig, discount,five_star_count,
                     specs['ram'], specs['storage'], specs['screen'], specs['chip'], img_url
                 ))
                 conn.commit()
                 total_saved += 1
                 
-                print(f"✅ [{total_saved}] {name[:20]}... | {price_sale:,}đ | ⭐{rating_count}")
+                print(f"✅ [{total_saved}] {name[:20]}... | {price_sale:,}đ | ⭐{five_star_count}")
 
             except Exception: continue
 
